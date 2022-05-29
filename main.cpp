@@ -1,124 +1,73 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <avr/io.h>
-#include <avr/interrupt.h>
-#include <Arduino.h>
+#include <WiFi.h>
+#include "time.h"
 
 
-/*
-Project: automatic irrigation system for arduino with website
-Author: kl0ibi
-date: 2022-05-27
-MCU: Arduino Mega 2560
-external MCU: esp32
-*/
+// Replace with your network credentials 
+const char* ssid = "WLAN1-D441TD11"; 
+const char* password = "MamaistToll123"; 
 
-//constants
-//Valve
-#define VALVE_LEFT_TOP 0
-#define VALVE_LEFT_BOTTOM 1
-#define VALVE_RIGHT_TOP 2
-#define VALVE_RIGHT_BOTTOM 3
-//LDR
-#define LDR 4
-//humidity sensor outdoor
-#define HUMIDITY_SENSOR_OUTDOOR 5
-//temperature sensor
-#define TEMPERATURE_SENSOR 16
-//humidity sensor earth
-#define HUM_LEFT_TOP 6
-#define HUM_LEFT_BOTTOM 7
-#define HUM_RIGHT_TOP 8
-#define HUM_RIGHT_BOTTOM 9
-//rain sensor
-#define RAIN_SENSOR 10
-//voltage sensor
-#define VOLTAGE_SENSOR 11
-//hall effect sensor
-#define HALL_LEFT_TOP 12
-#define HALL_LEFT_BOTTOM 13
-#define HALL_RIGHT_TOP 14
-#define HALL_RIGHT_BOTTOM 15
+//time server via NTP 
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 3600;
+const int   daylightOffset_sec = 3600;
+struct tm timeinfo;
 
-#define HUMIDITY_THRESHOLD_LOW 40
-#define HUMIDITY_THRESHOLD_HIGH 60
-#define TIME_AFTER_WATERING 300
-#define WATERING_TIME 30
+uint8_t day=0;
 
-volatile uint32_t millis_counter = 0;
-volatile uint32_t seconds_counter = 0;
-volatile double usedWater = 0;
+void printLocalTime()
+{
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+    return;
+  }
+  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+}
 
-float humidity=80;
-float temperature=23.5;
-float voltage=12.4;
-int hum_right_top=343;
-int hum_right_bottom=342;
-int hum_left_top=34;
-int hum_left_bottom=34; 
+void checkfornewDate()
+{
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Failed to obtain time");
+    return;
+  }
+  if(timeinfo.tm_mday != day){
+    day=timeinfo.tm_mday;
+    Serial.println("newDay");
+  }
+}
+
+// Set web server port number to 80 
+WiFiServer server(80); 
+
+// Variable to store the HTTP request String header;
+String header;
+// Declare the pins to which the LEDs are connected 
+int greenled = 2;
+int redled = 27; 
+
+int greenstate = 0;// state of green LED
+//char redstate[] = "off";// state of red LED
+
+
+
+float humidity=0;
+float temperature=0;
+float voltage=0;
+int hum_right_top=0;
+int hum_right_bottom=0;
+int hum_left_top=0;
+int hum_left_bottom=0;
 int rain=0;
 int light=0;
+float usedWater=0;
+
+bool locked=false;
+
+char sensor_keyword[]= "s";
 
 
-#define WINDOW_SIZE		5
-
-int value_hum_left_top[WINDOW_SIZE] = {};
-int value_hum_left_bottom[WINDOW_SIZE] = {};
-int value_hum_right_top[WINDOW_SIZE] = {};
-int value_hum_right_bottom[WINDOW_SIZE] = {};
-
-int filtered_hum_left_top[WINDOW_SIZE] = {};
-int filtered_hum_left_bottom[WINDOW_SIZE] = {};
-int filtered_hum_right_top[WINDOW_SIZE] = {};
-int filtered_hum_right_bottom[WINDOW_SIZE] = {};
-
-bool water_left_top = false;
-bool water_left_bottom = false;
-bool water_right_top = false;
-bool water_right_bottom = false;
-
-bool valve_left_top_locked = false;
-bool valve_left_bottom_locked = false;
-bool valve_right_top_locked = false;
-bool valve_right_bottom_locked = false;
-
-bool timer_isRunning = false;
-
-
-char newDay_keyword[] = "newDay";
 char recievedChar;
 char * strtokIndx;
-char buf[20];
-
-enum States{
-ST_BOOTUP,
-ST_SENSOR,
-ST_WATERING,
-ST_RAIN,
-ST_CLOSED,
-ST_ERROR
-};
-
-enum Events{
-EV_HUM,
-EV_HALL1,
-EV_HALL2,
-EV_HALL3,
-EV_HALL4,
-EV_RAIN,
-EV_TIMEOUT,
-EV_TIMEOUT0,
-EV_TIMEOUT3,
-EV_TIMEOUT4,
-EV_TIMEOUT5,
-EV_NONE
-};
-
-volatile enum States curState = ST_SENSOR;
-volatile enum Events curEvent = EV_NONE;
-
-
+char buf[40];
 
 int readline(int readch, char *buffer, int len) {
   static int pos = 0;
@@ -136,7 +85,6 @@ int readline(int readch, char *buffer, int len) {
         rpos = pos;
         pos = 0;  // Reset position index ready for next time
         return rpos;
-
     }
   }
   return 0;
@@ -152,472 +100,232 @@ void checkSerialInput() {
 
     strtokIndx  = strtok(buf, ",");
     
-    if (strcmp(strtokIndx, newDay_keyword) == 0) {
-      usedWater= 0;
+    if (strcmp(strtokIndx, sensor_keyword) == 0) {
+      strtokIndx = strtok(NULL, ","); //parse same strtokIndx
+      usedWater = atof(strtokIndx);
+      strtokIndx = strtok(NULL, ","); //parse same strtokIndx
+      humidity = atof(strtokIndx);
+      strtokIndx = strtok(NULL, ","); //parse same strtokIndx
+      temperature = atof(strtokIndx);
+      strtokIndx = strtok(NULL, ","); //parse same strtokIndx
+      voltage = atof(strtokIndx);
+      strtokIndx = strtok(NULL, ","); //parse same strtokIndx
+      greenstate = atof(strtokIndx);
+      strtokIndx = strtok(NULL, ","); //parse same strtokIndx
+      rain = atof(strtokIndx);
+      strtokIndx = strtok(NULL, ","); //parse same strtokIndx
+      light = atof(strtokIndx);
     }
     else {
       Serial.println("Unknown Command: " + String(strtokIndx));
     }
-
   }
 }
 
 
-
-
-
-
-void sendDatatoEsp32()
-{
-  static float data[8] = {0, 0, 0, 0 ,0 ,0 ,0, 0};
-  //static int temp_data[2]= {0,0};
-      data[0] = humidity;
-      data[1] = temperature;
-      data[2] = voltage;
-      data[3] = hum_right_top;
-      data[4] = hum_right_bottom;
-      data[5] = hum_left_top;
-      data[6] = hum_left_bottom;
-      data[7] = usedWater;
-
-      Serial.println(String(data[0]) + "," + String(data[1]) + "," + String(data[2]) + "," + String(data[3]) + "," + String(data[4]) + "," + String(data[5]) + "," + String(data[6]) + "," + String(data[7]));
-}
-
-
-
-
-void init_pins()
-{
-  /*
-  * 4 Valve Pins
-  * atleast 4 humidity sensors for watering
-  * 1 Pin for rainsensor
-  * 1 Pin for light sensor
-  * 1 Pin for voltage sensor
-  * 4 Pins for hall effect sensors
-  */
-
-  pinMode(VALVE_LEFT_BOTTOM, OUTPUT);
-  pinMode(VALVE_LEFT_TOP, OUTPUT);
-  pinMode(VALVE_RIGHT_BOTTOM, OUTPUT);
-  pinMode(VALVE_RIGHT_TOP, OUTPUT);
-  pinMode(LDR, INPUT);
-  pinMode(HUMIDITY_SENSOR_OUTDOOR, INPUT);
-  pinMode(HUM_LEFT_TOP, INPUT);
-  pinMode(HALL_RIGHT_TOP, INPUT);
-  pinMode(HALL_RIGHT_BOTTOM, INPUT);
-}
-
-
-void init_Timer1()
-{
-  //just for debugging not calculated time
-  //1ms Timer
-  TCCR1A=0x00;
-  TCCR1B|=(1<<WGM12);
-  TIMSK1|=(1<<OCIE1A);
-  OCR1A=200;
-}
-
-void Timer3_init()
-{
-  //just for debugging not calculated time
-  //1ms Timer
-  TCCR3A=0x00;
-  TCCR3B|=(1<<WGM32);
-  TIMSK3|=(1<<OCIE3A);
-  OCR3A=200;
-}
-
-void Timer4_init()
-{
-  //just for debugging not calculated time
-  //1ms Timer
-  TCCR4A=0x00;
-  TCCR4B|=(1<<WGM42);
-  TIMSK4|=(1<<OCIE4A);
-  OCR4A=200;
-}
-
-void Timer5_init()
-{
-  //just for debugging not calculated time
-  //1ms Timer
-  TCCR5A=0x00;
-  TCCR5B|=(1<<WGM52);
-  TIMSK5|=(1<<OCIE5A);
-  OCR5A=200;
-}
-
-void Timer0_init()
-{
-  //just for debugging not calculated time
-  //1ms Timer
-  //TCCR0A=0x00;
-  //TCCR0B|=(1<<WGM02);
- // TIMSK0|=(1<<OCIE0A);
-  //OCR0A=200;
-}
-
-
-
-void timer_start()
-{
-  //start timer
-  TCCR1B|=(1<<CS11)|(1<<CS10);
-}
-
-void timer_stop()
-{
-  //stop timer
-  TCCR1B&=~((1<<CS11)|(1<<CS10));
-}
-
-void timer0_start()
-{
-  //start timer
-  TCCR0B|=(1<<CS02)|(1<<CS00);
-}
-
-void timer0_stop()
-{
-  //stop timer
-  TCCR0B&=~((1<<CS02)|(1<<CS00));
-}
-
-void timer3_start()
-{
-  //start timer
-  TCCR3B|=(1<<CS32)|(1<<CS30);
-}
-
-void timer3_stop()
-{
-  //stop timer
-  TCCR3B&=~((1<<CS32)|(1<<CS30));
-}
-
-void timer4_start()
-{
-  //start timer
-  TCCR4B|=(1<<CS42)|(1<<CS40);
-}
-
-void timer4_stop()
-{
-  //stop timer
-  TCCR4B&=~((1<<CS42)|(1<<CS40));
-}
-
-void timer5_start()
-{
-  //start timer
-  TCCR5B|=(1<<CS52)|(1<<CS50);
-}
-
-void timer5_stop()
-{
-  //stop timer
-  TCCR5B&=~((1<<CS52)|(1<<CS50));
-}
-
-double calculatedWater()
-{
-  //0.6309 l/min
-
-   return (((double)millis_counter/1000)*0.6309);
-}
-
-void readSensor()
-{
-  //read sensors
-  humidity = analogRead(HUMIDITY_SENSOR_OUTDOOR);
-  temperature = analogRead(TEMPERATURE_SENSOR);
-  voltage = analogRead(VOLTAGE_SENSOR);
-  hum_right_top = analogRead(HUM_RIGHT_TOP);
-  hum_right_bottom = analogRead(HUM_RIGHT_BOTTOM);
-  
-  hum_left_bottom = analogRead(HUM_LEFT_BOTTOM);
-  //read rain sensor
-  rain = digitalRead(RAIN_SENSOR);
-  //read light sensor
-  light = analogRead(LDR);
-}
-
-
-
-int compare_int(const void *a, const void *b)
-{
-	int *x = (int *)a;
-	int *y = (int *)b;
-	return *x - *y;
-}
-
-int median_filter_2(int feld[WINDOW_SIZE])
-{
-	int temp[WINDOW_SIZE];
-	int median;
-
-	memcpy(temp, feld, WINDOW_SIZE*sizeof(int));
-
-	//search median (sort temp-array and take the middle)
-	qsort(temp, WINDOW_SIZE, sizeof(int), compare_int);
-	median = temp[WINDOW_SIZE / 2];
-
-	return median;
-}
-
-int average_filter(int feld[], int anz)
-{
-	int average;
-	int sum = 0;
-
-	for (int i = 0; i < anz; i++)
-		sum += feld[i];
-
-	average = sum / anz;
-	return average;
-}
-
-
-
-int main()
-{
+void setup() {
   Serial.begin(115200);
-  init_pins();
-  init_Timer1();
-  sei();
+ // Set the pinmode of the pins to which the LEDs are connected and turn them low to prevent flunctuations
+  pinMode(greenled, OUTPUT);
+  pinMode(redled, OUTPUT);
+  digitalWrite(greenled, LOW);
+  digitalWrite(redled, LOW);
+  //connect to access point
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  // Print local IP address and start web server
+  Serial.println("");
+  Serial.println("WiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());// this will display the Ip address of the Pi which should be entered into your browser
+  server.begin();
 
-  while(1)
-  {
-    switch(curState)
-      {
-        case ST_BOOTUP:
-        //wait for serial connection with esp32
-        if(Serial.available()>0)
-        {
-          Serial.println("Serial connection established");
-          curState=ST_SENSOR;
-         
-        }
-        break;
-        case ST_SENSOR:
-        //read sensors
-        for (int j=0; j< WINDOW_SIZE; j++)
-        {
-        for(int i=0; i < WINDOW_SIZE; i++)
-         {
-         
-            value_hum_left_bottom[i] = analogRead(HUM_LEFT_BOTTOM);
-          
-            value_hum_left_top[i] = analogRead(HUM_LEFT_TOP);
-          
-            value_hum_right_bottom[i] = analogRead(HUM_RIGHT_BOTTOM);
-          
-            value_hum_right_top[i] = analogRead(HUM_RIGHT_TOP);
-         }
-          filtered_hum_left_bottom[j] = median_filter_2(value_hum_left_bottom);
-          filtered_hum_left_top[j] = median_filter_2(value_hum_left_top);
-          filtered_hum_right_bottom[j] = median_filter_2(value_hum_right_bottom);
-          filtered_hum_right_top[j] = median_filter_2(value_hum_right_top);
-        }
-        //calculate average of filtered values
-        hum_left_bottom = average_filter(filtered_hum_left_bottom, WINDOW_SIZE);
-        hum_left_top = average_filter(filtered_hum_left_top, WINDOW_SIZE);
-        hum_right_bottom = average_filter(filtered_hum_right_bottom, WINDOW_SIZE);
-        hum_right_top = average_filter(filtered_hum_right_top, WINDOW_SIZE);
+  //init and get the time
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  printLocalTime();
 
-        if(hum_left_bottom > HUMIDITY_THRESHOLD_LOW && hum_left_bottom < HUMIDITY_THRESHOLD_HIGH && !valve_left_bottom_locked)
-        {
-          water_left_bottom=true;
-          curEvent=EV_HUM;
-        }
-        
-        if(hum_left_top > HUMIDITY_THRESHOLD_LOW && hum_left_top < HUMIDITY_THRESHOLD_HIGH && !valve_left_top_locked)
-        {
-          water_left_top=true;
-          curEvent=EV_HUM;
-        }
+  //set the day
+  day = timeinfo.tm_mday;
 
-        if(hum_right_bottom > HUMIDITY_THRESHOLD_LOW && hum_right_bottom < HUMIDITY_THRESHOLD_HIGH && !valve_right_bottom_locked)
-        {
-          water_right_bottom=true;
-          curEvent=EV_HUM;
-        }
+}
 
-        if(hum_right_top > HUMIDITY_THRESHOLD_LOW && hum_right_top < HUMIDITY_THRESHOLD_HIGH && !valve_right_top_locked)
-        {
-          water_right_top=true;
-          curEvent=EV_HUM;
-        }
+void loop(){
+  WiFiClient client = server.available();   // Listen for incoming clients
 
-        if(curEvent==EV_HUM)
-        {
-          curState=ST_WATERING;
-          curEvent=EV_NONE;
-        }
-        break;
-        case ST_WATERING:
-        //valve open
-        if(water_left_bottom)
-        {
-          valve_left_bottom_locked=true;
-          water_left_bottom=false;
-          digitalWrite(VALVE_LEFT_BOTTOM, HIGH);
-        }
-        if(water_left_top)
-        {
-          valve_left_top_locked=true;
-          water_left_top=false;
-          digitalWrite(VALVE_LEFT_TOP, HIGH);
-        }
-        if(water_right_bottom)
-        {
-          valve_right_bottom_locked=true;
-          water_right_bottom=false;
-          digitalWrite(VALVE_RIGHT_BOTTOM, HIGH);
-        }
-        if(water_right_top)
-        {
-          valve_right_top_locked=true;
-          water_right_top=false;
-          digitalWrite(VALVE_RIGHT_TOP, HIGH);
-        }
-        //wait for watering
-        if(timer_isRunning==false)
-        {
-          timer_isRunning=true;
-          timer_start();
-        }
-        if(curEvent==EV_TIMEOUT)
-        {
-          timer_stop();
-          //valve close
-          digitalWrite(VALVE_LEFT_BOTTOM, LOW);
-          digitalWrite(VALVE_LEFT_TOP, LOW);
-          digitalWrite(VALVE_RIGHT_BOTTOM, LOW);
-          digitalWrite(VALVE_RIGHT_TOP, LOW);
-          curState=ST_SENSOR;
-          curEvent=EV_NONE;
+  if (client) {                             // If a new client connects,
+    String currentLine = "";                // make a String to hold incoming data from the client
+    while (client.connected()) {            // loop while the client's connected
+      if (client.available()) {             // if there's bytes to read from the client,
+        char c = client.read();             // read a byte, then
+        Serial.write(c);                    // print it out the serial monitor
+        header += c;
+        if (c == '\n') {                    // if the byte is a newline character
+          // if the current line is blank, you got two newline characters in a row.
+          // that's the end of the client HTTP request, so send a response:
+          if (currentLine.length() == 0) {
+            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
+            // and a content-type so the client knows what's coming, then a blank line:
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-type:text/html");
+            client.println("Connection: close");
+            client.println();
+            
+            
+            
+            // Display the HTML web page
+            client.println("<!DOCTYPE html><html>");
+            client.println("<head><meta name=\"viewport\"  http-equiv=\"refresh\" content=\"width=device-width, initial-scale=1, 5\">");
+            client.println("<link rel=\"icon\" href=\"data:,\">");
+            client.println("<meta http-equiv=\"refresh\" content=\"5\" >");
+            // CSS to style the on/off buttons 
+            // Feel free to change the background-color and font-size attributes to fit your preferences
+            client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center; background-color: #000000;}");
+            client.println(".button { background-color: #CE1F1F; border: none; color: white; padding: 16px 40px;");
+            client.println("text-decoration: none; font-size: 15px; margin: 2px; cursor: pointer;}");
+            client.println(".button2 {background-color: #47CE1F;}</style></head>");
+            
 
-          if(valve_left_bottom_locked)
-          {
-            timer0_start();
+
+             
+
+            // Web Page Heading
+            client.println("<body><h1 style=color:white>Automatic Irregation System</h1>");
+           // header.indexOf("GET /");
+            // Display current state, and ON/OFF buttons for GPIO 26  
+            client.println("<p style=color:white>valve - State ");
+            client.println(greenstate);
+            client.println("</p>");
+            // If the green LED is off, it displays the ON button       
+            if (greenstate == 0) {
+              client.println("<img src=\"https://i.imgur.com/zUZRBzE.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+              client.println("<p><a href=\"/valve/on\"><button class=\"button\">OFF</button></a></p>");
+            } else if (greenstate == 1) {
+              client.println("<img src=\"https://i.imgur.com/7tkgKxc.png\" alt=\"off button\" style=\"width:device-width;height:180px;\">");
+              client.println("<p><a href=\"/valve/off\"><button class=\"button button2\">ON</button></a></p>");
+            } else if (greenstate == 2){
+               client.println("<img src=\"https://i.imgur.com/Ft4edIO.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+               header="";
+            } else if (greenstate == 3){
+               client.println("<img src=\"https://i.imgur.com/i8MuRIS.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+               header="";
+            } else if (greenstate == 4){
+               client.println("<img src=\"https://i.imgur.com/QN88syN.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+            } else if (greenstate == 5){
+               client.println("<img src=\"https://i.imgur.com/dXy9L2Z.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+           } else if(greenstate == 6){
+               client.println("<img src=\"https://i.imgur.com/Dhm4FPr.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+           } else if(greenstate == 7){
+               client.println("<img src=\"https://i.imgur.com/cLD8znn.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+            } else if(greenstate == 8){
+                client.println("<img src=\"https://i.imgur.com/GIQsZoL.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+              } else if(greenstate == 9){
+                client.println("<img src=\"https://i.imgur.com/4VDFwnW.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+              } else if(greenstate == 10){
+                client.println("<img src=\"https://i.imgur.com/m8Apk02.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+              } else if(greenstate == 11){
+                client.println("<img src=\"https://i.imgur.com/zrGiwTU.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+              } else if(greenstate == 12){
+                client.println("<img src=\"https://i.imgur.com/eWd6eW5.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+              } else if(greenstate == 13){
+                client.println("<img src=\"https://i.imgur.com/OdvGGU6.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+              } else if(greenstate == 14){
+                client.println("<img src=\"https://i.imgur.com/IzEcLVv.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+              } else if(greenstate == 15){
+                client.println("<img src=\"https://i.imgur.com/No0H9QD.png\" alt=\"on button\" style=\"width:device-width;height:180px;\">");
+                header="";
+              }
+
+
+                // turns the GPIOs on and off  
+              if (header.indexOf("GET /valve/on") >= 0) {
+                            Serial.println("valve on");
+                            greenstate = 1;
+                            digitalWrite(greenled, HIGH);
+                          } else if (header.indexOf("GET /valve/off") >= 0) {
+                            Serial.println("valve off");
+                            greenstate = 0;
+                            digitalWrite(greenled, LOW);                    
+                          }
+                            
+            client.print("<p style=color:white;font-weight:bold>");
+            client.print("used Water on ");
+            client.print(&timeinfo, "%A, %B %d %Y");
+            client.print(", ");
+            client.print(usedWater);
+            client.print(" L");
+            client.print("</p>");   
+
+            client.println("<p style=color:white;font-weight:bold>");
+            client.println("Voltage: ");
+            client.println(voltage);
+            client.println(" V");
+            client.println("</p>");  
+
+            client.println("<p style=color:white;font-weight:bold>");
+            client.println("Temperature: ");
+            client.println(temperature);
+            client.println(" C");
+            client.println("</p>"); 
+
+            client.println("<p style=color:white;font-weight:bold>");
+            client.println("Humidity: ");
+            client.println(humidity);
+            client.println(" %");
+            client.println("</p>"); 
+
+            client.println("<p style=color:white;font-weight:bold>");
+            client.println("Raining: ");
+            if(rain == 1){
+              client.println("Yes");
+            } else {
+              client.println("No");
+            }
+            client.println("</p>");
+
+            client.println("<p style=color:white;font-weight:bold>");
+            client.println("Light: ");
+            client.println(light);
+            client.println(" Lux");
+            client.println("</p>");
+            
+    
+            client.println("</body></html>");
+            
+            // The HTTP response ends with another blank line
+            client.println();
+            // Break out of the while loop
+            break;
+          } else { // if you got a newline, then clear currentLine
+            currentLine = "";
           }
-
-          if(valve_left_top_locked)
-          {
-            timer5_start();
-          }
-
-          if(valve_right_bottom_locked)
-          {
-            timer3_start();
-          }
-
-          if(valve_right_top_locked)
-          {
-            timer4_start();
-          }
+        } else if (c != '\r') {  // if you got anything else but a carriage return character,
+          currentLine += c;      // add it to the end of the currentLine
         }
-
-        
-
-        if(curEvent==EV_TIMEOUT0)
-        {
-          timer0_stop();
-          valve_left_bottom_locked=false;
-        }
-
-        if(curEvent==EV_TIMEOUT3)
-        {
-          timer3_stop();
-          valve_right_bottom_locked=false;
-        }
-
-        if(curEvent==EV_TIMEOUT4)
-        {
-          timer4_stop();
-          valve_right_top_locked=false;
-        }
-
-        if(curEvent==EV_TIMEOUT5)
-        {
-          timer5_stop();
-          valve_left_top_locked=false;
-        }
-        
-        break;
-        case ST_RAIN:
-        Serial.println("Rain detected");
-        break;
-        case ST_CLOSED:
-        Serial.println("Lid closed");
-        break;
-        case ST_ERROR:
-        Serial.println("Error");
-        break;
       }
-
-      sendDatatoEsp32();
-
+    }
+    // Clear the header variable
+    header = "";
+    // Close the connection
+    client.stop();
+    Serial.println("Client disconnected.");
+    Serial.println("");
   }
+  checkSerialInput();
+  checkfornewDate();
 }
-
-ISR(TIMER1_COMPA_vect)
-{
-  millis_counter++;
-  if(millis_counter>=WATERING_TIME)
-  {
-    millis_counter=0;
-    seconds_counter++;
-  }
-  usedWater=calculatedWater();
-}
-
-ISR(TIMER1_OVF_vect)
-{
-  millis_counter++;
-  if(millis_counter>=TIME_AFTER_WATERING)
-  {
-    millis_counter=0;
-    seconds_counter++;
-    curEvent=EV_TIMEOUT3;
-  }
-}
-
-ISR(TIMER3_COMPA_vect)
-{
-  millis_counter++;
-  if(millis_counter>=TIME_AFTER_WATERING)
-  {
-    millis_counter=0;
-    seconds_counter++;
-    curEvent=EV_TIMEOUT3;
-  }
-}
-
-ISR(TIMER4_COMPA_vect)
-{
-  millis_counter++;
-  if(millis_counter>=TIME_AFTER_WATERING)
-  {
-    millis_counter=0;
-    seconds_counter++;
-    curEvent=EV_TIMEOUT4;
-  }
-}
-
-ISR(TIMER5_COMPA_vect)
-{
-  millis_counter++;
-  if(millis_counter>=TIME_AFTER_WATERING)
-  {
-    millis_counter=0;
-    seconds_counter++;
-    curEvent=EV_TIMEOUT5;
-  }
-}
-
-
-
